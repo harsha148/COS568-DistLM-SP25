@@ -119,9 +119,7 @@ def train(args, train_dataset, model, tokenizer):
             tr_loss += loss_value
             loss_curve.append(loss_value)
 
-            end_time = time.perf_counter()
-            if step > 0:
-                iteration_times.append(end_time - start_time)
+            
             if step < 5:
                 logger.info(f"Batch {step + 1} Loss: {loss.item():.4f}")
             if (step + 1) % args.gradient_accumulation_steps == 0:
@@ -130,7 +128,9 @@ def train(args, train_dataset, model, tokenizer):
                 scheduler.step()
                 model.zero_grad()
                 global_step += 1
-
+            end_time = time.perf_counter()
+            if step > 0:
+                iteration_times.append(end_time - start_time)
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
                 break
