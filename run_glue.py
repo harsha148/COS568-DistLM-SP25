@@ -152,6 +152,8 @@ def train(args, train_dataset, model, tokenizer):
             loss_curve.append(loss_value)  # Record loss for this iteration
 
             end_time = time.perf_counter()
+            if step < 5:
+                logger.info(f"Batch {step + 1} Loss: {loss.item():.4f}")
             if step > 0:  # Discard timing of the first iteration
                 iteration_times.append(end_time - start_time)
 
@@ -171,7 +173,7 @@ def train(args, train_dataset, model, tokenizer):
             break
 
         evaluate(args, model, tokenizer, prefix=f"epoch_{epoch}")
-
+    
     # Calculate and log average iteration time.
     if iteration_times:
         avg_iter_time = sum(iteration_times) / len(iteration_times)
@@ -181,6 +183,7 @@ def train(args, train_dataset, model, tokenizer):
 
     # Save the loss curve to a file unique for each node.
     rank = 0 if args.local_rank == -1 else args.local_rank
+    os.makedirs(args.output_dir, exist_ok=True)
     loss_curve_file = os.path.join(args.output_dir, f"loss_curve_rank_{rank}.txt")
     with open(loss_curve_file, "w") as f:
         for loss_val in loss_curve:
