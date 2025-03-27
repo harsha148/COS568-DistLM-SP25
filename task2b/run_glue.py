@@ -24,7 +24,7 @@ from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
 
 from pytorch_transformers import AdamW, WarmupLinearSchedule
 
-from ./utils_glue import (compute_metrics, convert_examples_to_features,
+from utils_glue import (compute_metrics, convert_examples_to_features,
                         output_modes, processors)
 
 logger = logging.getLogger(__name__)

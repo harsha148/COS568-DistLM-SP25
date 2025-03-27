@@ -3,12 +3,13 @@ import glob
 import logging
 import os
 import random
-import time  # <-- Import time for measuring iteration durations
+import time
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader, RandomSampler, SequentialSampler, TensorDataset
 from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm, trange
 
 # Import a previous version of the HuggingFace Transformers package
@@ -23,7 +24,6 @@ from pytorch_transformers import (WEIGHTS_NAME, BertConfig,
                                   XLNetTokenizer)
 
 from pytorch_transformers import AdamW, WarmupLinearSchedule
-
 from utils_glue import (compute_metrics, convert_examples_to_features,
                         output_modes, processors)
 
@@ -46,41 +46,11 @@ def set_seed(args):
     torch.manual_seed(args.seed)
 
 
-def sync_gradients(model, args):
-    """
-    Synchronize gradients across all nodes using torch.distributed.gather and scatter.
-    Worker 0 gathers the gradients from all workers, averages them elementwise,
-    and then scatters the averaged gradients back to all workers.
-    """
-    if torch.distributed.get_world_size() < 2:
-        return  # No synchronization needed if only one process
-
-    rank = torch.distributed.get_rank()
-    world_size = torch.distributed.get_world_size()
-
-    for param in model.parameters():
-        if param.grad is not None:
-            grad = param.grad.data
-            grad_list = [torch.empty_like(grad) for _ in range(world_size)] if rank == 0 else None
-            torch.distributed.gather(grad, gather_list=grad_list, dst=0)
-            if rank == 0:
-                avg_grad = sum(grad_list) / world_size
-                scatter_list = [avg_grad.clone() for _ in range(world_size)]
-            else:
-                scatter_list = None
-                avg_grad = torch.empty_like(grad)
-            torch.distributed.scatter(avg_grad, scatter_list=scatter_list, src=0)
-            param.grad.data.copy_(avg_grad)
-
-
 def train(args, train_dataset, model, tokenizer):
-    """ Train the model using distributed data parallel training on CPU nodes,
-        while collecting iteration timings and logging the loss curve.
-    """
+    """ Train the model using DistributedDataParallel. """
 
     args.train_batch_size = args.per_device_train_batch_size
 
-    # Use DistributedSampler if in distributed mode.
     if args.local_rank != -1:
         train_sampler = DistributedSampler(train_dataset)
     else:
@@ -116,14 +86,12 @@ def train(args, train_dataset, model, tokenizer):
 
     global_step = 0
     tr_loss = 0.0
-
-    # Initialize lists for tracking iteration times and loss values.
     iteration_times = []
     loss_curve = []
 
     model.zero_grad()
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
-    set_seed(args)  # For reproducibility
+    set_seed(args)
 
     for epoch in train_iterator:
         if args.local_rank != -1:
@@ -149,19 +117,16 @@ def train(args, train_dataset, model, tokenizer):
             loss.backward()
             loss_value = loss.item()
             tr_loss += loss_value
-            loss_curve.append(loss_value)  # Record loss for this iteration
+            loss_curve.append(loss_value)
 
             end_time = time.perf_counter()
-            if step < 5:
-                logger.info(f"Batch {step + 1} Loss: {loss.item():.4f}")
-            if step > 0:  # Discard timing of the first iteration
+            if step > 0:
                 iteration_times.append(end_time - start_time)
 
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                if args.local_rank != -1:
-                    sync_gradients(model, args)
+                # With DDP, gradients are automatically synchronized.
                 optimizer.step()
-                scheduler.step()  # Update learning rate schedule
+                scheduler.step()
                 model.zero_grad()
                 global_step += 1
 
@@ -173,18 +138,16 @@ def train(args, train_dataset, model, tokenizer):
             break
 
         evaluate(args, model, tokenizer, prefix=f"epoch_{epoch}")
-    
-    # Calculate and log average iteration time.
+
     if iteration_times:
         avg_iter_time = sum(iteration_times) / len(iteration_times)
         logger.info("Average time per iteration (excluding first iteration): %.4f seconds", avg_iter_time)
     else:
         logger.info("No iteration timings recorded.")
 
-    # Save the loss curve to a file unique for each node.
+    # Save the loss curve (each node writes its own file)
     rank = 0 if args.local_rank == -1 else args.local_rank
-    os.makedirs(args.output_dir, exist_ok=True)
-    loss_curve_file = os.path.join(args.output_dir, f"loss_curve_rank_{rank}.txt")
+    loss_curve_file = os.path.join(args.output_dir, f"loss_curve_rank{rank}.txt")
     with open(loss_curve_file, "w") as f:
         for loss_val in loss_curve:
             f.write(f"{loss_val}\n")
@@ -353,7 +316,6 @@ def main():
                         help="Epsilon for Adam optimizer.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
                         help="Maximum gradient norm.")
-    # Set default to 1 epoch as per the new requirement.
     parser.add_argument("--num_train_epochs", default=1.0, type=float,
                         help="Total number of training epochs (default 1).")
     parser.add_argument("--max_steps", default=-1, type=int,
@@ -384,6 +346,9 @@ def main():
 
     if os.path.exists(args.output_dir) and os.listdir(args.output_dir) and args.do_train and not args.overwrite_output_dir:
         raise ValueError("Output directory ({}) already exists and is not empty. Use --overwrite_output_dir to overcome.".format(args.output_dir))
+
+    # Create output directory on all nodes.
+    os.makedirs(args.output_dir, exist_ok=True)
 
     if args.local_rank != -1:
         backend = "gloo"
@@ -430,6 +395,10 @@ def main():
         torch.distributed.barrier()
 
     model.to(args.device)
+
+    # Wrap the model with DistributedDataParallel.
+    if args.local_rank != -1:
+        model = DDP(model)
 
     logger.info("Training/evaluation parameters %s", args)
 
