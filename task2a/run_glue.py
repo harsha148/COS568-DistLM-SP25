@@ -53,16 +53,24 @@ def sync_gradients(model, args):
     and then scatters the averaged gradients back to all workers.
     """
     if torch.distributed.get_world_size() < 2:
-        return  # No need to sync if only one process is running.
-    
+        return  # No synchronization needed if only one process
+
+    rank = torch.distributed.get_rank()
     world_size = torch.distributed.get_world_size()
-    
+
     for param in model.parameters():
         if param.grad is not None:
-            # All-reduce the gradient tensor (sum operation)
-            torch.distributed.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
-            # Average the gradients on each node by dividing by the total number of nodes.
-            param.grad.data /= world_size
+            grad = param.grad.data
+            grad_list = [torch.empty_like(grad) for _ in range(world_size)] if rank == 0 else None
+            torch.distributed.gather(grad, gather_list=grad_list, dst=0)
+            if rank == 0:
+                avg_grad = sum(grad_list) / world_size
+                scatter_list = [avg_grad.clone() for _ in range(world_size)]
+            else:
+                scatter_list = None
+                avg_grad = torch.empty_like(grad)
+            torch.distributed.scatter(avg_grad, scatter_list=scatter_list, src=0)
+            param.grad.data.copy_(avg_grad)
 
 
 def train(args, train_dataset, model, tokenizer):
