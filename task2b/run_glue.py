@@ -46,6 +46,25 @@ def set_seed(args):
     torch.manual_seed(args.seed)
 
 
+def sync_gradients(model, args):
+    """
+    Synchronize gradients across all nodes using torch.distributed.gather and scatter.
+    Worker 0 gathers the gradients from all workers, averages them elementwise,
+    and then scatters the averaged gradients back to all workers.
+    """
+    if torch.distributed.get_world_size() < 2:
+        return  # No need to sync if only one process is running.
+    
+    world_size = torch.distributed.get_world_size()
+    
+    for param in model.parameters():
+        if param.grad is not None:
+            # All-reduce the gradient tensor (sum operation)
+            torch.distributed.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
+            # Average the gradients on each node by dividing by the total number of nodes.
+            param.grad.data /= world_size
+
+
 def train(args, train_dataset, model, tokenizer):
     """ Train the model using distributed data parallel training on CPU nodes,
         while collecting iteration timings and logging the loss curve.
