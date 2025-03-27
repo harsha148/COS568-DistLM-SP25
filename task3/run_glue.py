@@ -122,7 +122,8 @@ def train(args, train_dataset, model, tokenizer):
             end_time = time.perf_counter()
             if step > 0:
                 iteration_times.append(end_time - start_time)
-
+            if step < 5:
+                logger.info(f"Batch {step + 1} Loss: {loss.item():.4f}")
             if (step + 1) % args.gradient_accumulation_steps == 0:
                 # With DDP, gradients are automatically synchronized.
                 optimizer.step()
