@@ -133,8 +133,6 @@ def train(args, train_dataset, model, tokenizer):
                 loss.backward()
 
             tr_loss += loss.item()
-            
-            # Print loss for first 5 minibatches
             if step < 5:
                 logger.info(f"Batch {step + 1} Loss: {loss.item():.4f}")
 

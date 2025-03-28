@@ -47,32 +47,17 @@ def set_seed(args):
 
 
 def sync_gradients(model, args):
-    """
-    Synchronize gradients across all nodes using torch.distributed.gather and scatter.
-    Worker 0 gathers the gradients from all workers, averages them elementwise,
-    and then scatters the averaged gradients back to all workers.
-    """
     if torch.distributed.get_world_size() < 2:
-        return  # No need to sync if only one process is running.
-    
+        return
     world_size = torch.distributed.get_world_size()
-    
     for param in model.parameters():
         if param.grad is not None:
-            # All-reduce the gradient tensor (sum operation)
             torch.distributed.all_reduce(param.grad.data, op=torch.distributed.ReduceOp.SUM)
-            # Average the gradients on each node by dividing by the total number of nodes.
             param.grad.data /= world_size
 
 
 def train(args, train_dataset, model, tokenizer):
-    """ Train the model using distributed data parallel training on CPU nodes,
-        while collecting iteration timings and logging the loss curve.
-    """
-
     args.train_batch_size = args.per_device_train_batch_size
-
-    # Use DistributedSampler if in distributed mode.
     if args.local_rank != -1:
         train_sampler = DistributedSampler(train_dataset)
     else:
@@ -109,13 +94,12 @@ def train(args, train_dataset, model, tokenizer):
     global_step = 0
     tr_loss = 0.0
 
-    # Initialize lists for tracking iteration times and loss values.
     iteration_times = []
     loss_curve = []
 
     model.zero_grad()
     train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.local_rank not in [-1, 0])
-    set_seed(args)  # For reproducibility
+    set_seed(args)
 
     for epoch in train_iterator:
         if args.local_rank != -1:
@@ -141,7 +125,7 @@ def train(args, train_dataset, model, tokenizer):
             loss.backward()
             loss_value = loss.item()
             tr_loss += loss_value
-            loss_curve.append(loss_value)  # Record loss for this iteration
+            loss_curve.append(loss_value)
 
             if step < 5:
                 logger.info(f"Batch {step + 1} Loss: {loss.item():.4f}")
@@ -155,7 +139,7 @@ def train(args, train_dataset, model, tokenizer):
                 model.zero_grad()
                 global_step += 1
             end_time = time.perf_counter()
-            if step > 0:  # Discard timing of the first iteration
+            if step > 0:
                 iteration_times.append(end_time - start_time)
             if args.max_steps > 0 and global_step > args.max_steps:
                 epoch_iterator.close()
@@ -165,15 +149,12 @@ def train(args, train_dataset, model, tokenizer):
             break
 
         evaluate(args, model, tokenizer, prefix=f"epoch_{epoch}")
-    
-    # Calculate and log average iteration time.
     if iteration_times:
         avg_iter_time = sum(iteration_times) / len(iteration_times)
         logger.info("Average time per iteration (excluding first iteration): %.4f seconds", avg_iter_time)
     else:
         logger.info("No iteration timings recorded.")
 
-    # Save the loss curve to a file unique for each node.
     rank = 0 if args.local_rank == -1 else args.local_rank
     os.makedirs(args.output_dir, exist_ok=True)
     loss_curve_file = os.path.join(args.output_dir, f"loss_curve_rank_{rank}.txt")

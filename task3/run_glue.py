@@ -47,8 +47,6 @@ def set_seed(args):
 
 
 def train(args, train_dataset, model, tokenizer):
-    """ Train the model using DistributedDataParallel. """
-
     args.train_batch_size = args.per_device_train_batch_size
 
     if args.local_rank != -1:
@@ -123,7 +121,6 @@ def train(args, train_dataset, model, tokenizer):
             if step < 5:
                 logger.info(f"Batch {step + 1} Loss: {loss.item():.4f}")
             if (step + 1) % args.gradient_accumulation_steps == 0:
-                # With DDP, gradients are automatically synchronized.
                 optimizer.step()
                 scheduler.step()
                 model.zero_grad()
@@ -146,9 +143,8 @@ def train(args, train_dataset, model, tokenizer):
     else:
         logger.info("No iteration timings recorded.")
 
-    # Save the loss curve (each node writes its own file)
     rank = 0 if args.local_rank == -1 else args.local_rank
-    loss_curve_file = os.path.join(args.output_dir, f"loss_curve_rank{rank}.txt")
+    loss_curve_file = os.path.join(args.output_dir, f"loss_curve_rank_{rank}.txt")
     with open(loss_curve_file, "w") as f:
         for loss_val in loss_curve:
             f.write(f"{loss_val}\n")
@@ -324,7 +320,6 @@ def main():
     parser.add_argument("--warmup_steps", default=0, type=int,
                         help="Linear warmup over warmup_steps.")
 
-    # Distributed training parameters (for 4 CPU nodes)
     parser.add_argument("--master_ip", type=str, default="127.0.0.1",
                         help="Master IP address for distributed training.")
     parser.add_argument("--master_port", type=str, default="1234",
@@ -397,7 +392,6 @@ def main():
 
     model.to(args.device)
 
-    # Wrap the model with DistributedDataParallel.
     if args.local_rank != -1:
         model = DDP(model)
 
